@@ -1,35 +1,31 @@
 #Elle Loveseth
-#code sample from a forecasting package built to run individual customer forecasts at scale.
-#this code runs forecasts through a parameter grid, then tracks performance metrics for each forecast.
-#the output is a table of parameters that can be used to generate a forecast with best fit for each customer
-setwd("C://Users/elove/Dropbox/Projects")
-x <- read.csv("forecast_test_date.csv") %>%
-  rename(ds = 1)
-x$ds <- as.Date(x$ds, '%m/%d/%Y')
+#script to identify best forecast parameters for individual forecasts at scale using the prophet forecasting package.
 
-#load packages
-#library(prophet) #machine learning forecasting package
-#library(dplyr)
-#library(purrr)
+#load required packages
+library(prophet) #forecasting https://facebook.github.io/prophet/
+library(dplyr) #data manipulation
+library(purrr) #apply functions to lists
 
 ##choose forecast accuracy metric to identify best parameters
 metric <- 'rmse'  #options: 'mse' | 'rmse'
 
-##chose forecast length, in this case in weeks
+##chose forecast length in weeks (prophet also allows daily data)
 forecast_length <- 52
 
-#group variables by date and week; rename to ds and y for use in prophet package
-#x <- x %>%
- # group_by(uniqueid, ds) %>%
-  #summarise(y = sum(y)) %>%
-  #ungroup()
+#summarise forecasting variable by week in training dataframe
+#prophet reads ds as date and y as the forecasting variable
+x <- x %>%
+ group_by(uniqueid, ds) %>%
+ summarise(y = sum(y)) %>%
+ ungroup()
 
-#add binary covid indicator as additional forecast variable
+#add binary covid indicator (can also add additional regressors at this stage)
+#note: all regressors must have future values forecasted
 x$covid <- ifelse(x$ds >= '2020-03-01', 1, 0)
 
-#split into lists
+#split training set into individual lists by uniqueid
 x <- x %>%
-  split(.$uniqueid) #split data into lists to forecast at scale
+  split(.$uniqueid)
 
 #create a grid with each combination of hyperparameters
 #this can be used to cast a wide net with wide ranges of parameters
@@ -41,7 +37,7 @@ param_grid <- expand.grid(weekly_seasonality = FALSE,
                           seasonality_prior_scale = c(2, 5, 10),
                           changepoint_range = c(.6, .8),
                           changepoint_prior_scale = c(.03, .1, .5),
-                          #holidays = holidays,
+                          holidays = .holidays,
                           holidays_prior_scale = c(2, 5, 10))
 
 #duplicate the grid for each individual forecast in list form
@@ -50,7 +46,7 @@ names(l_param_grid) <- names(x)
 
 print("Model Specification Grid Complete.")
 
-#create empty lists to track results
+#create empty lists to append results
 results <- data.frame(matrix(ncol = 2))
 results <- vector(mode = 'numeric')
 results <- rep(list(results), length(x))
@@ -69,7 +65,7 @@ for (i in seq_len(nrow(param_grid))) {
                seasonality.prior.scale = parameters$seasonality_prior_scale,
                changepoint.range = parameters$changepoint_range,
                changepoint.prior.scale = parameters$changepoint_prior_scale,
-               #holidays = parameters$holidays,
+               holidays = parameters$holidays,
                holidays.prior.scale = parameters$holidays_prior_scale)
   
   #add regressors to model
@@ -86,7 +82,7 @@ for (i in seq_len(nrow(param_grid))) {
   #create future lists for each forecast
   future <- map(m, make_future_dataframe, periods = forecast_length, freq = 'week')
   
-  #flatten future lists into a dataframe to merge in regressors
+  #flatten future lists into a dataframe to merge regressors
   future <- bind_rows(future, .id = 'uniqueid')
 
   future$ds <- as.Date(future$ds)
@@ -102,9 +98,8 @@ for (i in seq_len(nrow(param_grid))) {
   forecast <- map2(m, future, predict)
 
   #we'll use built in performance metrics to test performance
-  #this runs multiple scenarios holding back various amounts of data to calculate performance
-  m.cv <- map(m, cross_validation, initial = 10, period = 20, horizon = 20, units = 'weeks')
-  #m.cv <- map(m, cross_validation, initial = 120, period = 20, horizon = 53, units = 'weeks')
+  #this runs multiple scenarios holding back set amounts of data to calculate performance
+  m.cv <- map(m, cross_validation, initial = 120, period = 20, horizon = 53, units = 'weeks')
   m.p <- map(m.cv, performance_metrics)
   m.p <- map(m.p, summarise, rmse = mean(rmse), mse = mean(mse))
   
@@ -129,3 +124,5 @@ if (metric == 'rmse') {
 
 print('Best forecast parameters identified.')
 
+#you are now left with a table that contains the forecast parameters with best fit for each uniqueid
+#assemble another grid using these results to fine tune a forecast, or use the table to run your final forecast scenario!
